@@ -1,0 +1,11 @@
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.0.0
+
+# GEE — optional but needed for live satellite data
+# pip install earthengine-api
+earthengine-api>=0.1.380
+
+# NumPy used internally by GEE client
+numpy>=1.24.0
+scikit-learn>=1.3.0
