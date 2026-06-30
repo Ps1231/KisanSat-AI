@@ -1,0 +1,62 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+pip-wheel-metadata/
+*.egg-info/
+
+# Virtual envs
+.venv/
+venv/
+ENV/
+env/
+.env
+.env.*
+*.json
+# Byte-compiled / caches
+*.so
+
+# IDEs / editors
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints
+
+# Build / distribution
+build/
+dist/
+
+# Node
+node_modules/
+
+# Earth Engine / credentials (do NOT commit service keys)
+python_api/gee_backend/creds/gee-key.jsontrained_output/
+model_output/
+backend/creds/
+GEE_SERVICE_ACCOUNT_KEY
+GEE_KEY_PATH
+*.pem
+*.key
+*.json.key
+credentials.json
+
+# Misc secrets
+.secrets/
+*.env.local
+EOF
