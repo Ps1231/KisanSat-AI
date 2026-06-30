@@ -1,11 +1,87 @@
+import "dotenv/config";
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { fileURLToPath } from 'url';
 import { spawn } from "child_process";
 import fs from "fs";
+import { GoogleGenAI } from "@google/genai";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// ── Gemini client (server-side only — the API key never reaches the browser) ──
+let genAI: GoogleGenAI | null = null;
+function getGenAI(): GoogleGenAI | null {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return null;
+  if (!genAI) genAI = new GoogleGenAI({ apiKey });
+  return genAI;
+}
+
+// ── Shared dashboard data + chat helpers ──────────────────────────────────────
+function getDashboardSnapshot() {
+  return {
+    stats: {
+      totalArea: 1500, // hectares
+      avgMoisture: 65,
+      etRate: 4.2,
+      waterDeficit: 'Low' as const,
+      cropDistribution: [
+        { name: 'Wheat', value: 40 },
+        { name: 'Corn', value: 35 },
+        { name: 'Soy', value: 25 },
+      ],
+    },
+    fields: [
+      { id: '1', name: 'Field North', moistureLevel: 72, growthStage: 'vegetative', stressLevel: 'low', advisory: 'No action needed' },
+      { id: '2', name: 'Field South', moistureLevel: 45, growthStage: 'flowering', stressLevel: 'high', advisory: 'Light irrigation recommended' },
+    ],
+  };
+}
+
+function buildFarmContext(): string {
+  const { stats, fields } = getDashboardSnapshot();
+  const crops = stats.cropDistribution.map(c => `${c.name} ${c.value}%`).join(', ');
+  const fieldLines = fields
+    .map(f => `- ${f.name}: ${f.growthStage} stage, soil moisture ${f.moistureLevel}%, stress level ${f.stressLevel}, advisory "${f.advisory}"`)
+    .join('\n');
+
+  return [
+    'Live farm snapshot:',
+    `- Total monitored area: ${stats.totalArea} ha`,
+    `- Average soil moisture: ${stats.avgMoisture}%`,
+    `- Evapotranspiration (ET) rate: ${stats.etRate} mm/day`,
+    `- Overall water deficit: ${stats.waterDeficit}`,
+    `- Crop distribution: ${crops}`,
+    'Fields:',
+    fieldLines,
+  ].join('\n');
+}
+
+// Used when GEMINI_API_KEY isn't configured, so the chat still works offline.
+function ruleBasedReply(message: string): string {
+  const m = message.toLowerCase();
+  const { fields } = getDashboardSnapshot();
+  const stressed = fields.filter(f => f.stressLevel !== 'low');
+
+  if (m.includes('moisture')) {
+    return fields.map(f => `${f.name}: ${f.moistureLevel}% soil moisture (${f.stressLevel} stress).`).join('\n');
+  }
+  if (m.includes('irrigat') || m.includes('water')) {
+    if (stressed.length === 0) return 'All monitored fields currently show low stress — no irrigation action is needed right now.';
+    return stressed.map(f => `${f.name} is under ${f.stressLevel} stress (${f.moistureLevel}% moisture). ${f.advisory}.`).join('\n');
+  }
+  if (m.includes('weather') || m.includes('forecast') || m.includes('rain')) {
+    return 'Check the Weather tab for the 7-day forecast — it\'s best to skip irrigation right before days with rain expected.';
+  }
+  if (m.includes('crop') || m.includes('grow') || m.includes('stage')) {
+    return fields.map(f => `${f.name} is currently in the ${f.growthStage} stage.`).join('\n');
+  }
+  if (m.includes('hello') || m.includes('hi') || m.includes('hey')) {
+    return 'Hello! I can answer questions about field moisture, irrigation advisories, crop stage, and the weather forecast.';
+  }
+  return "I'm running in offline mode right now (no GEMINI_API_KEY set on the server), so I can only answer basic questions about moisture, irrigation, weather, and crop stage using the live dashboard data. Try asking about one of those, or set GEMINI_API_KEY in .env.local for full AI-powered answers.";
+}
 
 async function startServer() {
   const app = express();
@@ -15,24 +91,7 @@ async function startServer() {
 
   // API routes FIRST
   app.get("/api/dashboard", (req, res) => {
-    const mockData = {
-      stats: {
-        totalArea: 1500, // hectares
-        avgMoisture: 65,
-        etRate: 4.2,
-        waterDeficit: 'Low',
-        cropDistribution: [
-          { name: 'Wheat', value: 40 },
-          { name: 'Corn', value: 35 },
-          { name: 'Soy', value: 25 },
-        ],
-      },
-      fields: [
-        { id: '1', name: 'Field North', moistureLevel: 72, growthStage: 'vegetative', stressLevel: 'low', advisory: 'No action needed' },
-        { id: '2', name: 'Field South', moistureLevel: 45, growthStage: 'flowering', stressLevel: 'high', advisory: 'Light irrigation recommended' },
-      ],
-    };
-    res.json(mockData);
+    res.json(getDashboardSnapshot());
   });
 
   app.get("/api/weather", (req, res) => {
@@ -79,6 +138,63 @@ async function startServer() {
 
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok" });
+  });
+
+  // ── Chatbot endpoint ─────────────────────────────────────────────────────
+  // Body: { message: string, history?: { role: 'user' | 'model', text: string }[] }
+  app.post("/api/chat", async (req, res) => {
+    try {
+      const { message, history } = (req.body || {}) as {
+        message?: string;
+        history?: { role: 'user' | 'model' | 'assistant'; text: string }[];
+      };
+
+      if (!message || !message.trim()) {
+        return res.status(400).json({ error: "Message is required." });
+      }
+
+      const client = getGenAI();
+
+      // No API key configured on the server — degrade gracefully instead of failing the chat.
+      if (!client) {
+        return res.json({ reply: ruleBasedReply(message), source: "fallback" });
+      }
+
+      const systemInstruction = [
+        "You are AgriBot, the in-app assistant for the Crop Irrigation Advisor dashboard.",
+        "You help farmers and agronomists interpret satellite-derived crop, moisture-stress, and irrigation data.",
+        "Answer in short, practical, farmer-friendly language. Use bullet points when summarizing multiple fields.",
+        "Only use the data below as ground truth for the current farm — never invent field names or numbers.",
+        "If a question is unrelated to farming, irrigation, crops, weather, or this dashboard, politely steer the conversation back.",
+        "",
+        buildFarmContext(),
+      ].join("\n");
+
+      const chatHistory = (history || [])
+        .filter(h => h && typeof h.text === "string" && h.text.trim().length > 0)
+        .slice(-12)
+        .map(h => ({
+          role: h.role === "user" ? "user" : "model",
+          parts: [{ text: h.text }],
+        }));
+
+      const chat = client.chats.create({
+        model: "gemini-2.5-flash",
+        history: chatHistory,
+        config: { systemInstruction },
+      });
+
+      const result = await chat.sendMessage({ message });
+      const replyText = (result.text ?? "").trim() || "Sorry, I couldn't generate a response just now — please try again.";
+
+      res.json({ reply: replyText, source: "gemini" });
+    } catch (err: any) {
+      console.error("[/api/chat] error:", err);
+      res.json({
+        reply: "I'm having trouble reaching the AI service right now. Please try again in a moment.",
+        source: "error",
+      });
+    }
   });
 
   app.all("/api/satellite/process", (req, res) => {
