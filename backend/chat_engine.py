@@ -20,7 +20,12 @@ import urllib.request
 import urllib.error
 from typing import List, Dict, Optional, Callable
 
-GEMINI_MODEL =  "gemini-flash-latest"
+# ── Primary LLM: Groq (fast, reliable free tier) ─────────────────────────────
+GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+# ── Fallback LLM: Gemini (used only if Groq key/call is unavailable) ──────────
+GEMINI_MODEL = "gemini-flash-latest"
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     f"{GEMINI_MODEL}:generateContent"
@@ -145,21 +150,83 @@ def _call_gemini(message: str, history: List[Dict], live_ctx: str) -> Optional[s
     payload = {
         "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
         "contents": contents,
-        "generationConfig": {"maxOutputTokens": 200, "temperature": 0.4},
+        "generationConfig": {
+            "maxOutputTokens": 800,      # room for the answer (was 200 — too small)
+            "temperature": 0.4,
+            # gemini-flash-latest is a "thinking" model; without this it spends the
+            # whole token budget on internal reasoning and truncates the reply.
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
     }
 
-    try:
-        req = urllib.request.Request(
-            f"{GEMINI_URL}?key={api_key}",
-            data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode())
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except Exception:
+    # Retry on transient 503 (model busy) / 429 spikes — Gemini free tier
+    # intermittently throttles. 3 attempts with short backoff before giving up
+    # to the rule-based fallback, so the demo stays smooth.
+    import time
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(
+                f"{GEMINI_URL}?key={api_key}",
+                data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode())
+            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        except urllib.error.HTTPError as e:
+            if e.code in (503, 429) and attempt < 2:
+                time.sleep(1.2 * (attempt + 1))  # 1.2s, 2.4s backoff
+                continue
+            return None
+        except Exception:
+            return None
+    return None
+
+
+def _call_groq(message: str, history: List[Dict], live_ctx: str) -> Optional[str]:
+    """Call Groq (OpenAI-compatible). Fast + reliable free tier. None on failure."""
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
         return None
+
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for turn in history[-6:]:
+        role = "user" if turn.get("role") == "user" else "assistant"
+        messages.append({"role": role, "content": turn.get("text", "")})
+    messages.append({"role": "user", "content": f"{message}\n\n[Live dashboard data: {live_ctx}]"})
+
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": messages,
+        "max_tokens": 400,
+        "temperature": 0.4,
+    }
+
+    import time
+    for attempt in range(2):
+        try:
+            req = urllib.request.Request(
+                GROQ_URL,
+                data=json.dumps(payload).encode(),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                    "User-Agent": "Mozilla/5.0",  # Cloudflare rejects urllib's default UA (403/1010)
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read().decode())
+            return data["choices"][0]["message"]["content"].strip()
+        except urllib.error.HTTPError as e:
+            if e.code in (503, 429) and attempt < 1:
+                time.sleep(1.0)
+                continue
+            return None
+        except Exception:
+            return None
+    return None
 
 
 def _rule_based_fallback(message: str, d: Dict) -> str:
@@ -196,10 +263,12 @@ def handle_chat(message: str, history: List[Dict], summary: Optional[Dict]) -> D
     if node and "answer" in node:
         return {"reply": node["answer"](d), "options": node.get("options", [])}
 
-    # Free text → Gemini, scoped; fallback to rules
+    # Free text → Groq first (fast/reliable), then Gemini, then rule-based.
     live_ctx = (f"{d['total']} pixels, crops: {d['crop_summary']}, "
                 f"{d['stressed_pct']}% stressed, {d['urgent']} urgent")
-    reply = _call_gemini(msg, history, live_ctx)
+    reply = _call_groq(msg, history, live_ctx)
+    if reply is None:
+        reply = _call_gemini(msg, history, live_ctx)
     if reply is None:
         reply = _rule_based_fallback(msg, d)
 
