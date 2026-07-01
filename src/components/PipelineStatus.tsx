@@ -2,37 +2,50 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { useTheme } from '../context/ThemeContext';
 import { CheckCircle2, Loader2, AlertCircle, RefreshCw } from 'lucide-react';
 
-interface PipelineStatus {
-  data_processing: string;
-  crop_classification_model: string;
-  crop_phenology_model: string;
-  moisture_stress_model: string;
-  irrigation_advisory: string;
+interface ModuleInfo {
+  status: string;
+  metric?: string;
 }
+
+interface PipelineResponse {
+  modules?: Record<string, ModuleInfo>;
+  [key: string]: any;   // flat keys (legacy fallback)
+}
+
+const MODULE_ORDER = [
+  'data_processing',
+  'crop_classification_model',
+  'crop_phenology_model',
+  'moisture_stress_model',
+  'irrigation_advisory',
+];
 
 export default function PipelineStatus() {
   const { darkMode } = useTheme();
-  const [status, setStatus] = useState<PipelineStatus | null>(null);
+  const [data, setData] = useState<PipelineResponse | null>(null);
   const [loading, setLoading] = useState(false);
 
   const fetchStatus = useCallback(() => {
     setLoading(true);
     fetch('/api/pipeline-status')
       .then(res => res.json())
-      .then(data => {
-        setStatus(data);
-        setLoading(false);
-      });
+      .then(d => { setData(d); setLoading(false); })
+      .catch(() => setLoading(false));
   }, []);
 
-  useEffect(() => {
-    fetchStatus();
-  }, [fetchStatus]);
+  useEffect(() => { fetchStatus(); }, [fetchStatus]);
 
-  if (!status) return <div className="text-gray-500">Loading pipeline status...</div>;
+  if (!data) return <div className="text-gray-500">Loading pipeline status...</div>;
+
+  // Prefer the rich `modules` shape; fall back to flat keys so it never breaks.
+  const modules: Record<string, ModuleInfo> = data.modules
+    ?? MODULE_ORDER.reduce((acc, k) => {
+      if (data[k]) acc[k] = { status: data[k] as string };
+      return acc;
+    }, {} as Record<string, ModuleInfo>);
 
   const getStatusIcon = (s: string) => {
-    if (s === 'ready' || s === 'active' || s === 'generated') return <CheckCircle2 className="w-5 h-5 text-emerald-500" />;
+    if (['ready', 'active', 'generated'].includes(s)) return <CheckCircle2 className="w-5 h-5 text-emerald-500" />;
     if (s === 'processing') return <Loader2 className="w-5 h-5 text-blue-500 animate-spin" />;
     return <AlertCircle className="w-5 h-5 text-red-500" />;
   };
@@ -45,15 +58,26 @@ export default function PipelineStatus() {
           <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''} ${darkMode ? 'text-gray-400' : 'text-gray-500'}`} />
         </button>
       </div>
+
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-        {Object.entries(status).map(([key, value]) => (
-          <div key={key} className="flex flex-col items-center gap-2">
-            <div className={`p-2 rounded-full ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
-                {getStatusIcon(value as string)}
+        {MODULE_ORDER.filter(k => modules[k]).map((key) => {
+          const mod = modules[key];
+          return (
+            <div key={key} className={`flex flex-col items-center gap-2 p-3 rounded-lg ${darkMode ? 'bg-gray-900/40' : 'bg-gray-50'}`}>
+              <div className={`p-2 rounded-full ${darkMode ? 'bg-gray-700' : 'bg-white'}`}>
+                {getStatusIcon(mod.status)}
+              </div>
+              <span className={`text-sm text-center capitalize font-medium ${darkMode ? 'text-gray-200' : 'text-gray-700'}`}>
+                {key.replace(/_/g, ' ')}
+              </span>
+              {mod.metric && (
+                <span className="text-xs text-center text-emerald-600 dark:text-emerald-400 font-mono">
+                  {mod.metric}
+                </span>
+              )}
             </div>
-            <span className={`text-xs text-center capitalize ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>{key.replace(/_/g, ' ')}</span>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

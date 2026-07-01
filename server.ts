@@ -3,86 +3,11 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { fileURLToPath } from 'url';
-import { GoogleGenAI } from "@google/genai";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // FastAPI backend (app.py, port 8000) — loads .env, initializes GEE once.
 const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
-
-// ── Gemini client (server-side only — the API key never reaches the browser) ──
-let genAI: GoogleGenAI | null = null;
-function getGenAI(): GoogleGenAI | null {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return null;
-  if (!genAI) genAI = new GoogleGenAI({ apiKey });
-  return genAI;
-}
-
-// ── Shared dashboard data + chat helpers ──────────────────────────────────────
-function getDashboardSnapshot() {
-  return {
-    stats: {
-      totalArea: 1500, // hectares
-      avgMoisture: 65,
-      etRate: 4.2,
-      waterDeficit: 'Low' as const,
-      cropDistribution: [
-        { name: 'Wheat', value: 40 },
-        { name: 'Corn', value: 35 },
-        { name: 'Soy', value: 25 },
-      ],
-    },
-    fields: [
-      { id: '1', name: 'Field North', moistureLevel: 72, growthStage: 'vegetative', stressLevel: 'low', advisory: 'No action needed' },
-      { id: '2', name: 'Field South', moistureLevel: 45, growthStage: 'flowering', stressLevel: 'high', advisory: 'Light irrigation recommended' },
-    ],
-  };
-}
-
-function buildFarmContext(): string {
-  const { stats, fields } = getDashboardSnapshot();
-  const crops = stats.cropDistribution.map(c => `${c.name} ${c.value}%`).join(', ');
-  const fieldLines = fields
-    .map(f => `- ${f.name}: ${f.growthStage} stage, soil moisture ${f.moistureLevel}%, stress level ${f.stressLevel}, advisory "${f.advisory}"`)
-    .join('\n');
-
-  return [
-    'Live farm snapshot:',
-    `- Total monitored area: ${stats.totalArea} ha`,
-    `- Average soil moisture: ${stats.avgMoisture}%`,
-    `- Evapotranspiration (ET) rate: ${stats.etRate} mm/day`,
-    `- Overall water deficit: ${stats.waterDeficit}`,
-    `- Crop distribution: ${crops}`,
-    'Fields:',
-    fieldLines,
-  ].join('\n');
-}
-
-// Used when GEMINI_API_KEY isn't configured, so the chat still works offline.
-function ruleBasedReply(message: string): string {
-  const m = message.toLowerCase();
-  const { fields } = getDashboardSnapshot();
-  const stressed = fields.filter(f => f.stressLevel !== 'low');
-
-  if (m.includes('moisture')) {
-    return fields.map(f => `${f.name}: ${f.moistureLevel}% soil moisture (${f.stressLevel} stress).`).join('\n');
-  }
-  if (m.includes('irrigat') || m.includes('water')) {
-    if (stressed.length === 0) return 'All monitored fields currently show low stress — no irrigation action is needed right now.';
-    return stressed.map(f => `${f.name} is under ${f.stressLevel} stress (${f.moistureLevel}% moisture). ${f.advisory}.`).join('\n');
-  }
-  if (m.includes('weather') || m.includes('forecast') || m.includes('rain')) {
-    return 'Check the Weather tab for the 7-day forecast — it\'s best to skip irrigation right before days with rain expected.';
-  }
-  if (m.includes('crop') || m.includes('grow') || m.includes('stage')) {
-    return fields.map(f => `${f.name} is currently in the ${f.growthStage} stage.`).join('\n');
-  }
-  if (m.includes('hello') || m.includes('hi') || m.includes('hey')) {
-    return 'Hello! I can answer questions about field moisture, irrigation advisories, crop stage, and the weather forecast.';
-  }
-  return "I'm running in offline mode right now (no GEMINI_API_KEY set on the server), so I can only answer basic questions about moisture, irrigation, weather, and crop stage using the live dashboard data. Try asking about one of those, or set GEMINI_API_KEY in .env.local for full AI-powered answers.";
-}
 
 // Generic proxy helper for the FastAPI satellite endpoints.
 async function proxyToFastAPI(reqBody: any, endpoint: string, res: express.Response) {
@@ -105,6 +30,18 @@ async function proxyToFastAPI(reqBody: any, endpoint: string, res: express.Respo
   }
 }
 
+// GET proxy helper for FastAPI dashboard endpoints.
+async function getFromFastAPI(endpoint: string, res: express.Response) {
+  try {
+    const r = await fetch(`${FASTAPI_URL}${endpoint}`);
+    const data = await r.json();
+    return res.status(r.status).json(data);
+  } catch (e) {
+    console.error(`[${endpoint}] FastAPI GET proxy failed:`, e);
+    return res.status(502).json({ error: "Backend unreachable" });
+  }
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -112,22 +49,11 @@ async function startServer() {
   app.use(express.json());
 
   // API routes FIRST
-  app.get("/api/dashboard", (req, res) => {
-    res.json(getDashboardSnapshot());
-  });
+  // Real dashboard data from the GEE/RF pipeline (FastAPI /api/dashboard)
+  app.get("/api/dashboard", (req, res) => getFromFastAPI("/api/dashboard", res));
 
-  app.get("/api/weather", (req, res) => {
-    const mockForecast = [
-      { day: 'Mon', temp: 24, condition: 'Sunny', waterNeeds: 'High' },
-      { day: 'Tue', temp: 22, condition: 'Sunny', waterNeeds: 'High' },
-      { day: 'Wed', temp: 20, condition: 'Cloudy', waterNeeds: 'Moderate' },
-      { day: 'Thu', temp: 18, condition: 'Rainy', waterNeeds: 'Low' },
-      { day: 'Fri', temp: 19, condition: 'Rainy', waterNeeds: 'Low' },
-      { day: 'Sat', temp: 21, condition: 'Sunny', waterNeeds: 'Moderate' },
-      { day: 'Sun', temp: 23, condition: 'Sunny', waterNeeds: 'High' },
-    ];
-    res.json(mockForecast);
-  });
+  // Real 7-day weather for the AOI (FastAPI → Open-Meteo)
+  app.get("/api/weather", (req, res) => getFromFastAPI("/api/weather", res));
 
   app.get("/api/soil-health", (req, res) => {
     const mockSoilHealth = [
@@ -148,15 +74,14 @@ async function startServer() {
     res.json(mockYield);
   });
 
-  app.get("/api/pipeline-status", (req, res) => {
-    res.json({
-      data_processing: "ready",
-      crop_classification_model: "active",
-      crop_phenology_model: "active",
-      moisture_stress_model: "active",
-      irrigation_advisory: "generated"
-    });
-  });
+  // Pipeline status (FastAPI — hardcoded demo view, real code commented there)
+  app.get("/api/pipeline-status", (req, res) => getFromFastAPI("/api/pipeline-status", res));
+
+  // Real RF-model data endpoints (used by IrrigationAdvisory / SoilHealth / Analytics)
+  app.get("/api/fields", (req, res) => getFromFastAPI("/api/fields", res));
+  app.get("/api/summary", (req, res) => getFromFastAPI("/api/summary", res));
+  app.get("/api/validation/metrics", (req, res) => getFromFastAPI("/api/validation/metrics", res));
+  app.get("/api/timeseries", (req, res) => getFromFastAPI("/api/timeseries", res));
 
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok" });
@@ -172,6 +97,11 @@ async function startServer() {
   // this Node process never loaded .env — so it always fell back to simulation.
   // Proxying to the already-initialized FastAPI session is faster and uses
   // live GEE whenever the backend has working credentials.
+  app.all("/api/advisory-summary", async (req, res) => {
+    const payload = req.method === "POST" ? req.body : req.query;
+    return proxyToFastAPI(payload, "/api/advisory-summary", res);
+  });
+
   app.all("/api/satellite/process", async (req, res) => {
     const payload = req.method === "POST" ? req.body : req.query;
     return proxyToFastAPI(payload, "/api/satellite/process", res);
@@ -219,7 +149,7 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Server running on http://locahttps://drive.google.com/drive/folders/1FyJjeKC26fbuEALupd_UblVR5i50fkNF?usp=sharinglhost:${PORT}`);
   });
 }
 

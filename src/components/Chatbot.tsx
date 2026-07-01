@@ -113,13 +113,13 @@ export default function Chatbot() {
   return (
     <div className="fixed bottom-4 right-4 z-50">
       {isOpen ? (
-        <div className={`${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} rounded-2xl shadow-2xl border w-[440px] max-w-[92vw] h-[600px] max-h-[85vh] flex flex-col overflow-hidden`}>
+        <div className={`${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} rounded-2xl shadow-2xl border w-[700px] max-w-[92vw] h-[800px] max-h-[85vh] flex flex-col overflow-hidden`}>
           <div className="px-4 py-3 flex justify-between items-center bg-gradient-to-r from-emerald-600 to-green-500 text-white">
             <div className="flex items-center gap-2">
               <div className="p-1.5 bg-white/20 rounded-lg"><Leaf className="w-5 h-5" /></div>
               <div>
-                <h3 className="font-semibold leading-tight">Crop Advisor</h3>
-                <p className="text-[11px] text-emerald-50/80">Guided help • ask anything</p>
+                <h3 className="text-lg font-semibold leading-tight">Crop Advisor</h3>
+                <p className="text-sm text-emerald-50/80">Guided help • ask anything</p>
               </div>
             </div>
             <button onClick={() => setIsOpen(false)} aria-label="Close chat" className="hover:bg-white/20 p-1 rounded">
@@ -127,7 +127,7 @@ export default function Chatbot() {
             </button>
           </div>
 
-          <div className={`px-3 py-2 flex items-center gap-2 border-b text-xs ${darkMode ? 'border-gray-700 bg-gray-900/40' : 'border-gray-100 bg-gray-50'}`}>
+          <div className={`px-3 py-2 flex items-center gap-2 border-b text-sm ${darkMode ? 'border-gray-700 bg-gray-900/40' : 'border-gray-100 bg-gray-50'}`}>
             <button onClick={goBack} disabled={!canGoBack}
               className={`flex items-center gap-1 px-2 py-1 rounded-md transition ${canGoBack ? 'text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/30' : 'text-gray-400 cursor-not-allowed'}`}>
               <ChevronLeft className="w-3.5 h-3.5" /> Back
@@ -139,7 +139,7 @@ export default function Chatbot() {
             <span className="ml-auto text-gray-400 truncate">{navStack.length > 1 ? navStack[navStack.length - 1].replace(/_/g, ' ') : 'home'}</span>
           </div>
 
-          <div ref={scrollRef} className={`flex-1 p-4 overflow-y-auto text-sm space-y-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+          <div ref={scrollRef} className={`flex-1 p-4 overflow-y-auto text-base space-y-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
             {messages.map((msg, i) => (
               <div key={i} className="space-y-2">
                 <div className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
@@ -160,7 +160,7 @@ export default function Chatbot() {
                     </div>
                     <ul className="space-y-1.5">
                       {msg.advice.steps.map((s, k) => (
-                        <li key={k} className="flex gap-2 text-xs leading-snug">
+                        <li key={k} className="flex gap-2 text-sm leading-snug">
                           <span className="text-emerald-500 mt-0.5">▸</span><span>{s}</span>
                         </li>
                       ))}
@@ -175,7 +175,7 @@ export default function Chatbot() {
                   <div className="flex flex-wrap gap-2 ml-1">
                     {msg.options.map((opt) => (
                       <button key={opt.next} onClick={() => goToNode(opt.next, opt.label)}
-                        className={`text-xs px-3 py-1.5 rounded-full border transition ${
+                        className={`text-sm px-4 py-2 rounded-full border transition ${
                           darkMode ? 'border-emerald-700 text-emerald-300 hover:bg-emerald-900/40' : 'border-emerald-300 text-emerald-700 hover:bg-emerald-50'
                         }`}>
                         {opt.label}
