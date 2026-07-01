@@ -415,6 +415,41 @@ def satellite_process(payload: dict):
     return result
 
 
+@app.post("/api/chat")
+def chat(payload: dict):
+    """
+    Hybrid advisory chatbot. Structured options answer instantly from live
+    pipeline data; free-text goes to Gemini (scoped to crop/irrigation), with a
+    rule-based fallback so it never hard-fails.
+    """
+    from chat_engine import handle_chat
+
+    message = payload.get("message", "")
+    history = payload.get("history", []) or []
+
+    # Pull the same live summary the dashboard uses (real RF/pipeline output).
+    live_summary = None
+    try:
+        enriched = get_or_create_enriched_pixels()
+        from collections import Counter
+        live_summary = {
+            "total_pixels":          len(enriched),
+            "crop_distribution":     dict(Counter(p["crop_type"] for p in enriched)),
+            "stress_distribution":   dict(Counter(p["stress_level"] for p in enriched)),
+            "advisory_distribution": dict(Counter(p["irrigation"]["advisory"] for p in enriched)),
+            "avg_peak_ndvi":         round(sum(p.get("NDVI_t2", 0) for p in enriched) / max(len(enriched), 1), 3),
+        }
+    except Exception as e:
+        log.warning(f"[chat] could not build live summary: {e}")
+
+    try:
+        return handle_chat(message, history, live_summary)
+    except Exception as e:
+        log.error(f"[chat] handler failed: {e}")
+        return {"reply": "I can help with crop and irrigation questions. Try a topic button below.",
+                "options": ["Crop overview", "Irrigation advice", "Moisture stress"]}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
